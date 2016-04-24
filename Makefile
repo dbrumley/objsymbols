@@ -1,18 +1,16 @@
-OPTS = --symbolizer=ida ${options} --saluki-taint --propagate-taint --saluki-solve
 case = *
-TEST = tests/test${case}.c
 
 all : build install
-build : objsymbols
+build : objdump
 
 native: *.ml
 	bapbuild -pkg cmdliner,re.pcre objsymbols.native
 
-objsymbols : *.ml
-		bapbuild -package cmdliner  objsymbols.plugin
+objdump : *.ml
+		bapbuild -pkg cmdliner -pkg re.pcre  objdump.plugin
 
-install: objsymbols
-		bapbundle install objsymbols.plugin
+install: objdump
+		bapbundle install objdump.plugin
 
 test-expect:
 		make -C ../test-expect
@@ -21,7 +19,7 @@ test : all test-expect
 		@TEST_OPTIONS="${OPTS}" bap-test-expect $(TEST)
 
 
-bap: objsymbols
+bap: objdump
 		bap ${binary} ${OPTS}
 
 clean:

@@ -1,4 +1,3 @@
-(* compile: corebuild  -package re.pcre parse_objdump.native *)
 open Core_kernel.Std
 open Re_perl
 open Bap.Std
@@ -11,16 +10,12 @@ include Self()
 
 let objdump_cmd = "/opt/local/bin/x86_64-elf-objdump"
 let objdump_opts = "-rd --no-show-raw-insn"
+let version = "0.1"
 
-let path : string option Term.t =
-  let doc = "Use objdump to extract symbols from a file. \
-             You can optionally provide a path to the \
-             objdump executable, or executable name." in
-  Arg.(value & opt (some string) None & info ["path"] ~doc)
 
 module Symbols = Data.Make(struct
     type t = (string * int64 * int64) list
-    let version = "0.1"
+    let version = version
   end)
 
 
@@ -62,7 +57,6 @@ let parse_instr l =
   else
     None
 
-
 (** Infer an end address
 
     This is hackish.  We know we have a list of functions that have
@@ -82,7 +76,11 @@ let rec end_addr funcs omax =
   | [(n1,a1)] ->
     match omax with None -> [(n1,a1,a1)] | Some(y) -> [(n1,a1,y)]
 
-let run_objdump  ?(cmd=objdump_cmd) ?(opts=objdump_opts) file =
+let print =
+ List.iter ~f:(fun (n, a1, a2) -> eprintf "(%08LX %08LX %s)\n" a1 a2 n)
+
+
+let run_objdump  cmd opts file =
   let anymax a b =
     (* anymax is either tha max, or if one is None, the other *)
     match a,b with
@@ -109,51 +107,57 @@ let run_objdump  ?(cmd=objdump_cmd) ?(opts=objdump_opts) file =
   let sfuncs = List.sort
       ~cmp:(fun (_,a1) (_,a2) -> Int64.compare a1 a2) funcs
   in
-  end_addr sfuncs maddr
+  let syms = end_addr sfuncs maddr in
+  print syms;
+  syms
 
-
-let register objdump =
+let register cmd opts =
   let make_id objdump path =
-    let objdump = match objdump with
-      | None -> "default"
-      | Some objdump -> objdump in
-    Data.Cache.digest ~namespace:"objdump" "%s%s" (Digest.file path)
-      objdump in
-  let syms_of_objdump objdump path =
-    run_objdump ?cmd:objdump path
-  in
-  let syms objdump path =
-    let id = make_id objdump path in
+    Data.Cache.digest ~namespace:"objdump" "%s%s"
+      (Digest.file path) objdump in
+  let syms cmd path =
+    let id = make_id cmd path in
     match Symbols.Cache.load id with
     | Some syms -> Some syms
-    | None -> match syms_of_objdump objdump path with
+    | None -> match run_objdump cmd opts path with
       | [] -> None
       | syms -> Symbols.Cache.save id syms; Some syms in
   let extract img =
     let addr = Addr.of_int64 in
-    Image.filename img >>= syms objdump >>|
+    Image.filename img >>= syms cmd >>|
     List.map ~f:(fun (n,s,e) -> n,addr s, addr e) >>| Seq.of_list in
   let symbolizer img = extract img >>| Symbolizer.of_blocks in
   Symbolizer.Factory.register Source.Binary name symbolizer
 
 
-let main objdump = register objdump
+let path : string Term.t =
+  let doc = "Specify the path to objdump." in
+  Arg.(value & opt file objdump_cmd & info ["path"] ~doc)
 
-let man = [
-  `S "DESCRIPTION";
-  `P "This plugin provides a symbolizer based on objdump"
-]
+let opts : string Term.t =
+  let doc = "Specify objdump options. \
+             Warning! We rely on *no* raw instructions, i.e., \
+             -no-raw-options, during parsing." in
+  Arg.(value & opt string objdump_opts & info ["opts"] ~doc)
 
-let info = Term.info name ~version ~doc ~man
-
-(* uncomment if you want to run as a plugin. *)
-(* let () = *)
-(*   let run = Term.(const main $path) in *)
-(*   match Term.eval ~argv ~catch:false (run, info) with *)
-(*   | `Ok () -> () *)
-(*   | `Help | `Version -> exit 0 *)
-(*   | `Error _ -> exit 1 *)
+let info =
+  let doc = "Get symbols by calling system objdump." in
+  let man = [
+    `S "DESCRIPTION";
+    `P "This plugin provides a symbolizer based on objdump. \
+        Note that we parse objdump output, thus this symbolizer \
+        is potentially fragile to changes in objdumps output."
+  ] in
+  Term.info ~man ~doc "objdump" ~version
 
 let () =
-  let syms = run_objdump Sys.argv.(1) in
-  List.iter ~f:(fun (n, a1, a2) -> printf "(%08LX %08LX %s)\n" a1 a2 n) syms
+  let run = Term.(const register $path $opts) in
+  match Term.eval ~argv ~catch:false (run, info) with
+  | `Ok () -> ()
+  | `Help | `Version -> exit 0
+  | `Error _ -> exit 1
+
+(* uncomment if you want to create a .native app *)
+(* let () = *)
+(*   let syms = run_objdump  objdump_cmd objdump_opts Sys.argv.(1) in *)
+(*   List.iter ~f:(fun (n, a1, a2) -> printf "(%08LX %08LX %s)\n" a1 a2 n) syms *)
