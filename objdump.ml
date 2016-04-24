@@ -8,7 +8,10 @@ open Option.Monad_infix
 
 include Self()
 
-let objdump_cmd = "/opt/local/bin/x86_64-elf-objdump"
+(* if you are on OSX with macports, this may be:
+  /opt/local/bin/x86_64-elf-objdump
+*)
+let objdump_cmd = "/usr/bin/objdump"
 let objdump_opts = "-rd --no-show-raw-insn"
 let version = "0.1"
 
