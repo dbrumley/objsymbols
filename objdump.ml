@@ -1,3 +1,4 @@
+(* todo: fileutils to search path for objdump *)
 open Core_kernel.Std
 open Re_perl
 open Bap.Std
@@ -5,16 +6,14 @@ open Regular.Std
 open Cmdliner
 open Format
 open Option.Monad_infix
-
 include Self()
 
-(* if you are on OSX with macports, this may be:
-  /opt/local/bin/x86_64-elf-objdump
-*)
-let objdump_cmd = "/usr/bin/objdump"
 let objdump_opts = "-rd --no-show-raw-insn"
 let version = "0.1"
-
+(* a list of common names for objdump *)
+let objdump_cmds = ["objdump";
+                    "x86_64-elf-objdump";
+                    "i386-elf-objdump"]
 
 module Symbols = Data.Make(struct
     type t = (string * int64 * int64) list
@@ -42,11 +41,15 @@ let objdump_strip  =
 let text_to_addr l =
   objdump_strip l |> (^) "0x" |> Int64.of_string
 
+
 let parse_func_start l =
   if re func_start_re l then
-    let xs = String.split_on_chars ~on:[' '] l in
+    let xs = String.split_on_chars ~on:[' '; '@'] l in
     match xs with
-      addr::name::[] -> Some(objdump_strip name, text_to_addr addr)
+      addr::name::[] -> (* name w/o @plt case *)
+      Some(objdump_strip name, text_to_addr addr)
+    | addr::name::_::[] -> (* name@plt case *)
+      Some(objdump_strip name, text_to_addr addr)
     | _ -> None
   else
     None
@@ -60,7 +63,7 @@ let parse_instr l =
   else
     None
 
-(** Infer an end address
+(*  Infer an end address
 
     This is hackish.  We know we have a list of functions that have
     their start address (per objdump).  We set the last address for
@@ -78,6 +81,7 @@ let rec end_addr funcs omax =
     (n1,a1, Int64.pred a2) :: end_addr tl omax
   | [(n1,a1)] ->
     match omax with None -> [(n1,a1,a1)] | Some(y) -> [(n1,a1,y)]
+
 
 let print =
  List.iter ~f:(fun (n, a1, a2) -> eprintf "(%08LX %08LX %s)\n" a1 a2 n)
@@ -111,10 +115,10 @@ let run_objdump  cmd opts file =
       ~cmp:(fun (_,a1) (_,a2) -> Int64.compare a1 a2) funcs
   in
   let syms = end_addr sfuncs maddr in
-  print syms;
   syms
 
-let register cmd opts =
+
+let register opts cmd =
   let make_id objdump path =
     Data.Cache.digest ~namespace:"objdump" "%s%s"
       (Digest.file path) objdump in
@@ -133,28 +137,49 @@ let register cmd opts =
   Symbolizer.Factory.register Source.Binary name symbolizer
 
 
-let path : string Term.t =
+let main cmd opts =
+  let rec try_defaults cmds  =
+    match cmds with
+    | hd :: tl ->
+      begin
+        try FileUtil.which hd |>  register opts with
+          Not_found -> try_defaults tl
+      end
+    | [] -> ()
+  in
+   match cmd with
+       Some s ->
+       (* a full path was specified. Note Cmdliner checks if the file *)
+       (* exists for us *)
+       register opts s
+     | None -> (* no explicit option; let's search some defaults *)
+       try_defaults objdump_cmds
+
+
+let path : string option Term.t =
   let doc = "Specify the path to objdump." in
-  Arg.(value & opt file objdump_cmd & info ["path"] ~doc)
+  Arg.(value & opt (some file) None & info ["path"] ~doc)
+
 
 let opts : string Term.t =
   let doc = "Specify objdump options. \
              Warning! We rely on *no* raw instructions, i.e., \
-             -no-raw-options, during parsing." in
+             --no-show-raw-insn, during parsing." in
   Arg.(value & opt string objdump_opts & info ["opts"] ~doc)
 
+
 let info =
-  let doc = "Get symbols by calling system objdump." in
   let man = [
     `S "DESCRIPTION";
     `P "This plugin provides a symbolizer based on objdump. \
         Note that we parse objdump output, thus this symbolizer \
         is potentially fragile to changes in objdumps output."
   ] in
-  Term.info ~man ~doc "objdump" ~version
+  Term.info ~man ~doc name ~version
+
 
 let () =
-  let run = Term.(const register $path $opts) in
+  let run = Term.(const main $path $opts) in
   match Term.eval ~argv ~catch:false (run, info) with
   | `Ok () -> ()
   | `Help | `Version -> exit 0
