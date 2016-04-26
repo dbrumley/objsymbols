@@ -1,4 +1,3 @@
-(* todo: fileutils to search path for objdump *)
 open Core_kernel.Std
 open Re_perl
 open Bap.Std
